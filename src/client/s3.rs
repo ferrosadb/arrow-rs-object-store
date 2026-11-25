@@ -20,7 +20,7 @@
 use crate::multipart::PartId;
 use crate::path::Path;
 use crate::{ListResult, ObjectMeta, Result};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -69,7 +69,8 @@ pub struct ListPrefix {
 pub struct ListContents {
     pub key: String,
     pub size: u64,
-    pub last_modified: DateTime<Utc>,
+    #[serde(deserialize_with = "crate::util::deserialize_rfc3339")]
+    pub last_modified: Timestamp,
     #[serde(rename = "ETag")]
     pub e_tag: Option<String>,
 }

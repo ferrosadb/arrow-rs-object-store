@@ -511,7 +511,7 @@ pub async fn get_opts(storage: &dyn ObjectStore) {
     }
 
     let options = GetOptions::new().with_if_unmodified_since(Some(
-        meta.last_modified + chrono::Duration::try_hours(10).unwrap(),
+        meta.last_modified + jiff::SignedDuration::from_hours(10),
     ));
     match storage.get_opts(&path, options).await {
         Ok(_) | Err(Error::NotSupported { .. }) => {}
@@ -519,7 +519,7 @@ pub async fn get_opts(storage: &dyn ObjectStore) {
     }
 
     let options = GetOptions::new().with_if_unmodified_since(Some(
-        meta.last_modified - chrono::Duration::try_hours(10).unwrap(),
+        meta.last_modified - jiff::SignedDuration::from_hours(10),
     ));
     match storage.get_opts(&path, options).await {
         Err(Error::Precondition { .. } | Error::NotSupported { .. }) => {}
@@ -533,7 +533,7 @@ pub async fn get_opts(storage: &dyn ObjectStore) {
     }
 
     let options = GetOptions::new().with_if_modified_since(Some(
-        meta.last_modified - chrono::Duration::try_hours(10).unwrap(),
+        meta.last_modified - jiff::SignedDuration::from_hours(10),
     ));
     match storage.get_opts(&path, options).await {
         Ok(_) | Err(Error::NotSupported { .. }) => {}

@@ -30,9 +30,9 @@ use std::{collections::VecDeque, path::PathBuf};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
 use futures_util::{FutureExt, TryStreamExt};
 use futures_util::{StreamExt, stream::BoxStream};
+use jiff::Timestamp;
 use parking_lot::Mutex;
 use url::Url;
 use walkdir::{DirEntry, WalkDir};
@@ -57,6 +57,9 @@ pub(crate) enum Error {
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
         path: String,
     },
+
+    #[error("Modification time of {} is out of range: {}", path, source)]
+    ModifiedTimeOutOfRange { source: jiff::Error, path: String },
 
     #[error("Unable to copy data to file: {}", source)]
     UnableToCopyDataToFile { source: io::Error },
@@ -477,7 +480,7 @@ impl ObjectStore for LocalFileSystem {
         maybe_spawn_blocking(move || {
             let file = open_file(&path)?;
             let metadata = open_metadata(&file, &path)?;
-            let meta = convert_metadata(metadata, location);
+            let meta = convert_metadata(metadata, location)?;
             options.check_preconditions(&meta)?;
 
             let range = match options.range {
@@ -1409,7 +1412,7 @@ fn map_seek_error(source: io::Error, file: &File, path: &std::path::Path, reques
 
 fn convert_entry(entry: DirEntry, location: Path) -> Result<Option<ObjectMeta>> {
     match entry.metadata() {
-        Ok(metadata) => Ok(Some(convert_metadata(metadata, location))),
+        Ok(metadata) => Ok(Some(convert_metadata(metadata, location)?)),
         Err(e) => {
             if let Some(io_err) = e.io_error() {
                 if io_err.kind() == ErrorKind::NotFound {
@@ -1424,11 +1427,17 @@ fn convert_entry(entry: DirEntry, location: Path) -> Result<Option<ObjectMeta>> 
     }
 }
 
-fn last_modified(metadata: &Metadata) -> DateTime<Utc> {
-    metadata
+fn last_modified(metadata: &Metadata, location: &Path) -> Result<Timestamp> {
+    let modified = metadata
         .modified()
-        .expect("Modified file time should be supported on this platform")
-        .into()
+        .expect("Modified file time should be supported on this platform");
+    // jiff covers years -9999..=9999; chrono covered a wider range
+    let modified =
+        Timestamp::try_from(modified).map_err(|source| Error::ModifiedTimeOutOfRange {
+            path: location.to_string(),
+            source,
+        })?;
+    Ok(modified)
 }
 
 fn get_etag(metadata: &Metadata) -> String {
@@ -1447,16 +1456,16 @@ fn get_etag(metadata: &Metadata) -> String {
     format!("\"{inode:x}-{mtime:x}-{size:x}\"")
 }
 
-fn convert_metadata(metadata: Metadata, location: Path) -> ObjectMeta {
-    let last_modified = last_modified(&metadata);
+fn convert_metadata(metadata: Metadata, location: Path) -> Result<ObjectMeta> {
+    let last_modified = last_modified(&metadata, &location)?;
 
-    ObjectMeta {
+    Ok(ObjectMeta {
         location,
         last_modified,
         size: metadata.len(),
         e_tag: Some(get_etag(&metadata)),
         version: None,
-    }
+    })
 }
 
 #[cfg(unix)]

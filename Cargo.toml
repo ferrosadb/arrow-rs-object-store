@@ -33,12 +33,11 @@ all-features = true
 [dependencies] # In alphabetical order
 async-trait = "0.1.53"
 bytes = "1.0"
-chrono = { version = "0.4.34", default-features = false, features = ["clock"] }
 futures-core = "0.3"
 futures-util = { version = "0.3", features = ["sink"] }
 http = "1.2.0"
-humantime = "2.1"
 itertools = "0.15.0"
+jiff = { version = "1", default-features = false, features = ["std"] }
 parking_lot = { version = "0.12" }
 percent-encoding = "2.1"
 thiserror = "2.0.2"
@@ -86,7 +85,7 @@ default = ["fs"]
 
 # Shared cloud/provider implementation dependencies.
 # This intentionally does NOT include reqwest or a bundled crypto provider.
-cloud-base = ["serde", "serde_json", "quick-xml", "hyper", "chrono/serde", "base64", "rand", "http-body-util", "form_urlencoded", "serde_urlencoded", "tokio"]
+cloud-base = ["serde", "serde_json", "quick-xml", "hyper", "base64", "rand", "http-body-util", "form_urlencoded", "serde_urlencoded", "tokio"]
 
 # Built-in reqwest-based HTTP transport.
 reqwest = ["dep:reqwest", "reqwest/stream"]
@@ -99,7 +98,8 @@ ring = ["dep:ring", "rustls-pki-types"]
 
 # Implementation base features.
 # These compile provider logic without forcing reqwest or a crypto provider.
-azure-base = ["cloud-base", "httparse"]
+# The Azure CLI credential interprets `expiresOn` in the system time zone.
+azure-base = ["cloud-base", "httparse", "jiff/tz-system", "jiff/tzdb-zoneinfo", "jiff/tzdb-bundle-platform", "jiff/tzdb-concatenated"]
 gcp-base = ["cloud-base"]
 aws-base = ["cloud-base", "crc-fast", "md-5"]
 http-base = ["cloud-base"]
@@ -119,6 +119,10 @@ integration = ["rand", "tokio"]
 tokio = ["dep:tokio", "dep:tracing"]
 
 [dev-dependencies] # In alphabetical order
+# Test oracles only: the `date` and `duration` modules reproduce the behaviour
+# of the exact versions object_store 0.14.2 shipped with.
+chrono = { version = "=0.4.39", default-features = false, features = ["std", "alloc"] }
+humantime = "=2.3.0"
 futures-executor = "0.3"
 hyper = { version = "1.2", features = ["server"] }
 hyper-util = "0.1"

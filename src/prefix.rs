@@ -387,7 +387,7 @@ mod tests {
         let prefix = Path::from("prefix");
         let meta = ObjectMeta {
             location: Path::from("prefix/foo"),
-            last_modified: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            last_modified: jiff::Timestamp::from_second(1_700_000_000).unwrap(),
             size: 42,
             e_tag: Some("etag-value".to_string()),
             version: Some("version-value".to_string()),

@@ -19,8 +19,8 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use http::header::HeaderValue;
-use humantime::{format_duration, parse_duration};
 
+use crate::duration::{format_duration, parse_duration};
 use crate::{Error, Result};
 
 /// Provides deferred parsing of a value

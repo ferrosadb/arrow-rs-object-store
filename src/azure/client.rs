@@ -39,11 +39,11 @@ use async_trait::async_trait;
 use base64::Engine;
 use base64::prelude::{BASE64_STANDARD, BASE64_STANDARD_NO_PAD};
 use bytes::{Buf, Bytes};
-use chrono::{DateTime, Utc};
 use http::{
     HeaderName, Method,
     header::{CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, HeaderValue, IF_MATCH, IF_NONE_MATCH},
 };
+use jiff::Timestamp;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -681,10 +681,8 @@ const DELEGATION_KEY_MIN_TTL: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// Parse the validity Azure actually granted a user delegation key, falling back
 /// to the window we requested if the response can't be parsed.
-fn delegation_key_expiry(key: &UserDelegationKey, requested: DateTime<Utc>) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(&key.signed_expiry)
-        .map(|t| t.with_timezone(&Utc))
-        .unwrap_or(requested)
+fn delegation_key_expiry(key: &UserDelegationKey, requested: Timestamp) -> Timestamp {
+    key.signed_expiry.parse::<Timestamp>().unwrap_or(requested)
 }
 
 #[derive(Debug)]
@@ -956,8 +954,15 @@ impl AzureClient {
         if self.config.encryption_headers.is_enabled() {
             match credential.as_deref() {
                 Some(AzureCredential::AccessKey(key)) => {
-                    let signed_start = Utc::now();
-                    let signed_expiry = signed_start + COPY_SOURCE_SAS_EXPIRES_IN;
+                    let signed_start = Timestamp::now();
+                    let signed_expiry = crate::date::checked_add_std(
+                        signed_start,
+                        COPY_SOURCE_SAS_EXPIRES_IN,
+                    )
+                    .ok_or_else(|| crate::Error::Generic {
+                        store: STORE,
+                        source: format!("SAS expiry {COPY_SOURCE_SAS_EXPIRES_IN:?} after {signed_start} is out of range").into(),
+                    })?;
                     AzureSigner::new(
                         key.clone(),
                         self.config.account.clone(),
@@ -1018,14 +1023,14 @@ impl AzureClient {
     /// <https://docs.microsoft.com/en-us/rest/api/storageservices/get-user-delegation-key>
     async fn get_delegation_key_inner(
         &self,
-        start: &DateTime<Utc>,
-        end: &DateTime<Utc>,
+        start: &Timestamp,
+        end: &Timestamp,
     ) -> Result<UserDelegationKey> {
         let credential = self.get_credential().await?;
         let url = self.config.service.clone();
 
-        let start = start.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        let expiry = end.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let start = crate::date::rfc3339_secs(*start);
+        let expiry = crate::date::rfc3339_secs(*end);
 
         let mut body = String::new();
         body.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<KeyInfo>\n");
@@ -1065,8 +1070,17 @@ impl AzureClient {
     /// Since delegation keys are acquired ad-hoc, the signer allows for signing multiple urls with the same key.
     pub(crate) async fn signer(&self, expires_in: Duration) -> Result<AzureSigner> {
         let credential = self.get_credential().await?;
-        let signed_start = chrono::Utc::now();
-        let signed_expiry = signed_start + expires_in;
+        let signed_start = Timestamp::now();
+        let signed_expiry =
+            crate::date::checked_add_std(signed_start, expires_in).ok_or_else(|| {
+                crate::Error::Generic {
+                    store: STORE,
+                    source: format!(
+                        "SAS expiry {expires_in:?} after {signed_start} is out of range"
+                    )
+                    .into(),
+                }
+            })?;
         match credential.as_deref() {
             Some(AzureCredential::BearerToken(_)) => {
                 let key = self
@@ -1104,8 +1118,8 @@ impl AzureClient {
     /// its key. The (rare) longer-lived SAS get a dedicated key instead.
     async fn user_delegation_key(
         &self,
-        sas_start: DateTime<Utc>,
-        sas_expiry: DateTime<Utc>,
+        sas_start: Timestamp,
+        sas_expiry: Timestamp,
         expires_in: Duration,
     ) -> Result<UserDelegationKey> {
         if expires_in <= DELEGATION_KEY_MIN_TTL {
@@ -1123,14 +1137,21 @@ impl AzureClient {
         &self,
         validity: Duration,
     ) -> Result<TemporaryToken<UserDelegationKey>> {
-        let start = chrono::Utc::now();
-        let requested_expiry = start + validity;
+        let start = Timestamp::now();
+        let requested_expiry =
+            crate::date::checked_add_std(start, validity).ok_or_else(|| crate::Error::Generic {
+                store: STORE,
+                source: format!(
+                    "delegation key validity {validity:?} after {start} is out of range"
+                )
+                .into(),
+            })?;
         let key = self
             .get_delegation_key_inner(&start, &requested_expiry)
             .await?;
         // Expire the cache entry when the key Azure granted does (it may clamp it).
         let expiry = delegation_key_expiry(&key, requested_expiry);
-        let ttl = (expiry - chrono::Utc::now()).to_std().unwrap_or(validity);
+        let ttl = Duration::try_from(expiry.duration_since(Timestamp::now())).unwrap_or(validity);
         Ok(TemporaryToken {
             token: key,
             expiry: Some(Instant::now() + ttl),
@@ -1418,7 +1439,7 @@ impl TryFrom<Blob> for ObjectMeta {
 #[serde(rename_all = "PascalCase")]
 struct BlobProperties {
     #[serde(deserialize_with = "deserialize_rfc1123", rename = "Last-Modified")]
-    pub last_modified: DateTime<Utc>,
+    pub last_modified: Timestamp,
     #[serde(rename = "Content-Length")]
     pub content_length: u64,
     #[serde(rename = "Content-Type")]
@@ -1714,7 +1735,7 @@ mod tests {
 
     #[test]
     fn test_delegation_key_expiry() {
-        let at = |s: &str| DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc);
+        let at = |s: &str| s.parse::<Timestamp>().unwrap();
         let requested = at("2026-06-25T06:00:00Z");
 
         // A well-formed granted expiry is honored (e.g. Azure clamped it shorter).
@@ -1758,8 +1779,8 @@ mod tests {
         AzureClient::new(config, HttpClient::new(Client::new()))
     }
 
-    fn delegation_key_response(expiry: DateTime<Utc>) -> String {
-        let expiry = expiry.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    fn delegation_key_response(expiry: Timestamp) -> String {
+        let expiry = crate::date::rfc3339_secs(expiry);
         format!(
             r#"<?xml version="1.0" encoding="utf-8"?>
 <UserDelegationKey>
@@ -1777,7 +1798,7 @@ mod tests {
     #[cfg(feature = "reqwest")]
     #[tokio::test]
     async fn test_user_delegation_key_cache_reuse_and_refresh() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let one_min = Duration::from_secs(60);
         let three_hours = Duration::from_secs(3 * 60 * 60);
 
@@ -1791,15 +1812,25 @@ mod tests {
         let fetches_clone = Arc::clone(&fetches);
         server.push_fn(move |_| {
             fetches_clone.fetch_add(1, Ordering::SeqCst);
-            http::Response::new(delegation_key_response(now + three_hours))
+            http::Response::new(delegation_key_response(
+                crate::date::checked_add_std(now, three_hours).unwrap(),
+            ))
         });
 
         client
-            .user_delegation_key(now, now + one_min, one_min)
+            .user_delegation_key(
+                now,
+                crate::date::checked_add_std(now, one_min).unwrap(),
+                one_min,
+            )
             .await
             .unwrap();
         client
-            .user_delegation_key(now, now + one_min, one_min)
+            .user_delegation_key(
+                now,
+                crate::date::checked_add_std(now, one_min).unwrap(),
+                one_min,
+            )
             .await
             .unwrap();
         assert_eq!(fetches.load(Ordering::SeqCst), 1);
@@ -1809,11 +1840,17 @@ mod tests {
         let fetches_clone = Arc::clone(&fetches);
         server.push_fn(move |_| {
             fetches_clone.fetch_add(1, Ordering::SeqCst);
-            http::Response::new(delegation_key_response(now + three_hours))
+            http::Response::new(delegation_key_response(
+                crate::date::checked_add_std(now, three_hours).unwrap(),
+            ))
         });
 
         client
-            .user_delegation_key(now, now + three_hours, three_hours)
+            .user_delegation_key(
+                now,
+                crate::date::checked_add_std(now, three_hours).unwrap(),
+                three_hours,
+            )
             .await
             .unwrap();
         assert_eq!(fetches.load(Ordering::SeqCst), 2);
@@ -1829,17 +1866,27 @@ mod tests {
             let fetches_clone = Arc::clone(&fetches);
             server.push_fn(move |_| {
                 fetches_clone.fetch_add(1, Ordering::SeqCst);
-                http::Response::new(delegation_key_response(now + one_min))
+                http::Response::new(delegation_key_response(
+                    crate::date::checked_add_std(now, one_min).unwrap(),
+                ))
             });
         }
 
         client
-            .user_delegation_key(now, now + one_min, one_min)
+            .user_delegation_key(
+                now,
+                crate::date::checked_add_std(now, one_min).unwrap(),
+                one_min,
+            )
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(150)).await;
         client
-            .user_delegation_key(now, now + one_min, one_min)
+            .user_delegation_key(
+                now,
+                crate::date::checked_add_std(now, one_min).unwrap(),
+                one_min,
+            )
             .await
             .unwrap();
         assert_eq!(fetches.load(Ordering::SeqCst), 2);

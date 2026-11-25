@@ -28,10 +28,10 @@ use crate::{RetryConfig, StaticCredentialProvider};
 use async_trait::async_trait;
 use base64::Engine;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
-use chrono::{DateTime, Utc};
 use futures_util::TryFutureExt;
 use http::{HeaderMap, Method};
 use itertools::Itertools;
+use jiff::Timestamp;
 use percent_encoding::utf8_percent_encode;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -748,7 +748,7 @@ fn trim_header_value(value: &str) -> String {
 /// [Google SigV4]: https://cloud.google.com/storage/docs/access-control/signed-urls
 #[derive(Debug)]
 pub(crate) struct GCSAuthorizer {
-    date: Option<DateTime<Utc>>,
+    date: Option<Timestamp>,
     credential: Arc<GcpSigningCredential>,
 }
 
@@ -782,7 +782,7 @@ impl GCSAuthorizer {
         client: &GoogleCloudStorageClient,
     ) -> crate::Result<()> {
         let email = &self.credential.email;
-        let date = self.date.unwrap_or_else(Utc::now);
+        let date = self.date.unwrap_or_else(Timestamp::now);
         let scope = self.scope(date);
         let credential_with_scope = format!("{email}/{scope}");
 
@@ -803,7 +803,10 @@ impl GCSAuthorizer {
         url.query_pairs_mut()
             .append_pair("X-Goog-Algorithm", "GOOG4-RSA-SHA256")
             .append_pair("X-Goog-Credential", &credential_with_scope)
-            .append_pair("X-Goog-Date", &date.format("%Y%m%dT%H%M%SZ").to_string())
+            .append_pair(
+                "X-Goog-Date",
+                &crate::date::basic_datetime(date).to_string(),
+            )
             .append_pair("X-Goog-Expires", &expires_in.as_secs().to_string())
             .append_pair("X-Goog-SignedHeaders", &signed_headers);
 
@@ -821,8 +824,11 @@ impl GCSAuthorizer {
     /// Get scope for the request
     ///
     /// <https://cloud.google.com/storage/docs/authentication/signatures#credential-scope>
-    fn scope(&self, date: DateTime<Utc>) -> String {
-        format!("{}/auto/storage/goog4_request", date.format("%Y%m%d"),)
+    fn scope(&self, date: Timestamp) -> String {
+        format!(
+            "{}/auto/storage/goog4_request",
+            crate::date::basic_date(date)
+        )
     }
 
     /// Canonicalizes query parameters into the GCP canonical form
@@ -912,7 +918,7 @@ impl GCSAuthorizer {
     pub(crate) fn string_to_sign(
         &self,
         crypto: &dyn CryptoProvider,
-        date: DateTime<Utc>,
+        date: Timestamp,
         request_method: &Method,
         url: &Url,
         headers: &HeaderMap,
@@ -924,7 +930,7 @@ impl GCSAuthorizer {
         Ok(format!(
             "{}\n{}\n{}\n{}",
             "GOOG4-RSA-SHA256",
-            date.format("%Y%m%dT%H%M%SZ"),
+            crate::date::basic_datetime(date),
             scope,
             hashed_canonical_req
         ))

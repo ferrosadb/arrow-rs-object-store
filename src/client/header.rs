@@ -19,7 +19,6 @@
 
 use crate::ObjectMeta;
 use crate::path::Path;
-use chrono::{DateTime, TimeZone, Utc};
 use http::HeaderMap;
 use http::header::{CONTENT_LENGTH, ETAG, LAST_MODIFIED};
 
@@ -60,7 +59,7 @@ pub(crate) enum Error {
     #[error("Invalid last modified '{}': {}", last_modified, source)]
     InvalidLastModified {
         last_modified: String,
-        source: chrono::ParseError,
+        source: crate::date::DateParseError,
     },
 
     #[error("Invalid content length '{}': {}", content_length, source)]
@@ -122,15 +121,15 @@ pub(crate) fn header_meta(
                 .to_str()
                 .map_err(|source| Error::BadHeader { source })?;
 
-            DateTime::parse_from_rfc2822(last_modified)
-                .map_err(|source| Error::InvalidLastModified {
+            crate::date::parse_rfc2822(last_modified).map_err(|source| {
+                Error::InvalidLastModified {
                     last_modified: last_modified.into(),
                     source,
-                })?
-                .with_timezone(&Utc)
+                }
+            })?
         }
         None if cfg.last_modified_required => return Err(Error::MissingLastModified),
-        None => Utc.timestamp_nanos(0),
+        None => jiff::Timestamp::UNIX_EPOCH,
     };
 
     let e_tag = match get_etag(headers) {

@@ -22,8 +22,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
 use futures_util::{StreamExt, stream::BoxStream};
+use jiff::Timestamp;
 use parking_lot::RwLock;
 
 use crate::multipart::{MultipartStore, PartId};
@@ -86,18 +86,13 @@ pub struct InMemory {
 #[derive(Debug, Clone)]
 struct Entry {
     data: Bytes,
-    last_modified: DateTime<Utc>,
+    last_modified: Timestamp,
     attributes: Attributes,
     e_tag: usize,
 }
 
 impl Entry {
-    fn new(
-        data: Bytes,
-        last_modified: DateTime<Utc>,
-        e_tag: usize,
-        attributes: Attributes,
-    ) -> Self {
+    fn new(data: Bytes, last_modified: Timestamp, e_tag: usize, attributes: Attributes) -> Self {
         Self {
             data,
             last_modified,
@@ -126,7 +121,7 @@ impl Storage {
     fn insert(&mut self, location: &Path, bytes: Bytes, attributes: Attributes) -> usize {
         let etag = self.next_etag;
         self.next_etag += 1;
-        let entry = Entry::new(bytes, Utc::now(), etag, attributes);
+        let entry = Entry::new(bytes, Timestamp::now(), etag, attributes);
         self.overwrite(location, entry);
         etag
     }
@@ -207,7 +202,7 @@ impl ObjectStore for InMemory {
     ) -> Result<PutResult> {
         let mut storage = self.storage.write();
         let etag = storage.next_etag;
-        let entry = Entry::new(payload.into(), Utc::now(), etag, opts.attributes);
+        let entry = Entry::new(payload.into(), Timestamp::now(), etag, opts.attributes);
 
         match opts.mode {
             PutMode::Overwrite => storage.overwrite(location, entry),

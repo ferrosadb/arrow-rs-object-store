@@ -25,12 +25,12 @@ use crate::util::deserialize_rfc1123;
 use crate::{Attribute, Attributes, ClientOptions, GetOptions, ObjectMeta, PutPayload, Result};
 use async_trait::async_trait;
 use bytes::Buf;
-use chrono::{DateTime, Utc};
 use http::header::{
     CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_ENCODING, CONTENT_LANGUAGE, CONTENT_LENGTH,
     CONTENT_TYPE,
 };
 use http::{Method, StatusCode};
+use jiff::Timestamp;
 use percent_encoding::percent_decode_str;
 use serde::Deserialize;
 use url::Url;
@@ -507,7 +507,7 @@ pub(crate) struct PropStat {
 #[derive(Deserialize)]
 pub(crate) struct Prop {
     #[serde(deserialize_with = "deserialize_rfc1123", rename = "getlastmodified")]
-    last_modified: DateTime<Utc>,
+    last_modified: Timestamp,
 
     #[serde(rename = "getcontentlength")]
     content_length: Option<u64>,
